@@ -2,6 +2,16 @@ import React, { useState, useEffect } from "react";
 import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
 
 function App() {
+  const [videoSrc, setVideoSrc] = useState(null);
+  const [segments, setSegments] = useState([]);
+  const [processing, setProcessing] = useState(false);
+  const [reversedVideo, setReversedVideo] = useState(null);
+
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath: "https://unpkg.com/@ffmpeg/core@0.8.3/dist/ffmpeg-core.js",
+  });
+
   // Registrar el Service Worker cuando la app se cargue
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -19,15 +29,6 @@ function App() {
     }
   }, []);
 
-  const [videoSrc, setVideoSrc] = useState(null);
-  const [segments, setSegments] = useState([]);
-  const [processing, setProcessing] = useState(false);
-
-  const ffmpeg = createFFmpeg({
-    log: true,
-    corePath: "https://unpkg.com/@ffmpeg/core@0.8.3/dist/ffmpeg-core.js",
-  });
-
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -36,19 +37,18 @@ function App() {
     }
   };
 
+  // Función para generar los segmentos
   const processVideo = async (file) => {
     setProcessing(true);
 
     if (!ffmpeg.isLoaded()) {
-      await ffmpeg.load();
+      await ffmpeg.load(); // Asegurarse de que FFmpeg está cargado antes de usarlo
     }
 
-    // Escribe el archivo en el sistema de archivos virtual de FFmpeg
     ffmpeg.FS("writeFile", "input.mp4", await fetchFile(file));
 
     const segmentURLs = [];
 
-    // Ejecuta los comandos secuencialmente para evitar el error
     for (let i = 0; i < 5; i++) {
       const outputName = `segment${i}.mp4`;
       await ffmpeg.run(
@@ -72,6 +72,54 @@ function App() {
 
     setSegments(segmentURLs);
     setProcessing(false);
+  };
+
+  // Función para unir los videos en orden inverso
+  const concatenateVideosInReverse = async () => {
+    if (!ffmpeg.isLoaded()) {
+      await ffmpeg.load(); // Verificar que FFmpeg está cargado antes de la concatenación
+    }
+
+    // Aseguramos que FFmpeg haya terminado todas las operaciones anteriores
+    await Promise.all(
+      segments.map(async (segment, index) => {
+        const outputName = `segment${index}.mp4`;
+        await ffmpeg.FS("writeFile", outputName, await fetchFile(segment));
+      })
+    );
+
+    // Generar el archivo de lista con los segmentos en orden inverso
+    let concatList = "";
+    for (let i = segments.length - 1; i >= 0; i--) {
+      concatList += `file 'segment${i}.mp4'\n`; // Escribir en orden inverso
+    }
+
+    ffmpeg.FS("writeFile", "concat_list.txt", concatList);
+
+    const outputVideo = "output_reversed.mp4";
+    await ffmpeg.run(
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      "concat_list.txt",
+      "-c",
+      "copy",
+      outputVideo
+    );
+
+    const data = ffmpeg.FS("readFile", outputVideo);
+    const videoBlob = new Blob([data.buffer], { type: "video/mp4" });
+    const videoURL = URL.createObjectURL(videoBlob);
+
+    return videoURL;
+  };
+
+  // Función que se activa cuando el botón de unir videos es presionado
+  const handleConcatenation = async () => {
+    const reversedVideoURL = await concatenateVideosInReverse();
+    setReversedVideo(reversedVideoURL);
   };
 
   return (
@@ -101,6 +149,22 @@ function App() {
               </div>
             ))}
           </div>
+
+          {segments.length > 0 && (
+            <button
+              onClick={handleConcatenation}
+              className="bg-violet-600 text-white p-2 rounded"
+            >
+              Unir videos en orden inverso
+            </button>
+          )}
+
+          {reversedVideo && (
+            <div className="mt-6">
+              <h2>Video en orden inverso</h2>
+              <video src={reversedVideo} controls width="320" />
+            </div>
+          )}
         </div>
       </div>
     </div>
